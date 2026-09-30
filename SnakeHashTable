@@ -1,0 +1,269 @@
+import java.util.Iterator;
+
+/**
+ * Implementation of SnakeHashTableInterface with snake-based and row-wise
+ * probing.
+ * 
+ * @param <T> the type of values stored in the table
+ */
+public class SnakeHashTable<T> implements SnakeHashTableInterface<T> {
+
+    // 🚫 DO NOT ADD ANY OTHER INSTANCE VARIABLES!
+    private final Cell<T>[][] table;
+
+    /**
+     * Constructs a new SnakeHashTable with the specified number of rows and
+     * columns.
+     */
+    @SuppressWarnings("unchecked")
+    public SnakeHashTable(int rows, int cols) {
+        table = (Cell<T>[][]) new Cell[rows][cols];
+    }
+
+    @Override
+    public Position insert(T value) {
+        Position start = hash(value);
+        return insertInternal(value, start.row, start.col, false);
+    }
+
+    @Override
+    public Position insert(T value, int row, int col) {
+        return insertInternal(value, row, col, true);
+    }
+
+    /**
+     * insertion logic used by both insert methods.
+     *
+     * @param value       value to insert
+     * @param startRow    starting row
+     * @param startCol    starting col
+     * @param isManualKey true if this is the (value,row,col) overload
+     *                    whose keys must be ignored by lookupKey/deleteKey.
+     */
+    private Position insertInternal(T value, int startRow, int startCol, boolean isManualKey) {
+        int rows = table.length;
+        int cols = table[0].length;
+        int capacity = rows * cols; //used to detect full-table probing loops
+
+        int r = startRow;
+        int c = startCol;
+        int probed = 0;
+
+        while (probed < capacity) {
+            Cell<T> cell = table[r][c];
+
+            // "Empty" means:
+            // - no cell yet
+            // - tombstone (isDeleted)
+            // - snake metadata cell with value == null
+            if (cell == null) {
+                // brand new cell, which means safe to create new object
+                Cell<T> newCell = new Cell<>(value);
+                newCell.isManualKey = isManualKey;
+                table[r][c] = newCell;
+                return new Position(r, c);
+            }
+
+            if (cell.isDeleted || cell.value == null) {
+                // insert into an existing snake/tombstone slot; preserves snake data
+                cell.value = value;
+                cell.isDeleted = false;
+                cell.isManualKey = isManualKey;
+                return new Position(r, c);
+            }
+
+            probed++;
+
+            // If in a snake with a next position, follow it first
+            if (cell.isSnake && cell.nextInSnake != null) {
+                Position nxt = cell.nextInSnake;
+                r = nxt.row;
+                c = nxt.col;
+            } else {
+                // Otherwise, row-wise probing with wrap-around
+                c++;
+                if (c >= cols) {
+                    c = 0;
+                    r++;
+                    if (r >= rows) {
+                        r = 0;
+                    }
+                }
+            }
+        }
+
+        // All positions probed → looped or table full
+        throw new RuntimeException("Probe sequence cycled through all cells");
+    }
+
+    @Override
+    public Position lookupKey(T value) {
+        Position start = hash(value);
+        int rows = table.length;
+        int cols = table[0].length;
+        int capacity = rows * cols;
+
+        int r = start.row;
+        int c = start.col;
+        int probed = 0;
+
+        while (probed < capacity) {
+            Cell<T> cell = table[r][c];
+
+            if (cell == null) {
+                // Hit a never-used slot → key not present
+                return null;
+            }
+
+            // Match only if:
+            // - not deleted
+            // - not a manually-inserted key
+            // - value not null
+            if (!cell.isDeleted &&
+                    !cell.isManualKey &&
+                    cell.value != null &&
+                    cell.value.equals(value)) {
+                return new Position(r, c);
+            }
+
+            probed++;
+
+            //follow snake first
+            if (cell.isSnake && cell.nextInSnake != null) {
+                Position nxt = cell.nextInSnake;
+                r = nxt.row;
+                c = nxt.col;
+            } else {
+                //otherwise do row-wise probing
+                c++;
+                if (c >= cols) {
+                    c = 0;
+                    r++;
+                    if (r >= rows) {
+                        r = 0;
+                    }
+                }
+            }
+        }
+
+        return null;
+    }
+
+    @Override
+    public boolean deleteKey(T value) {
+        Position pos = lookupKey(value);
+        if (pos == null) {
+            return false;
+        }
+        Cell<T> cell = table[pos.row][pos.col];
+        if (cell == null) {
+            return false;
+        }
+        cell.isDeleted = true; //standard tombstone
+        return true;
+    }
+
+    @Override
+    public T probe(Position p) {
+        if (p.row < 0 || p.row >= table.length || p.col < 0 || p.col >= table[0].length) {
+            throw new IllegalArgumentException("Position out of bounds");
+        }
+        Cell<T> cell = table[p.row][p.col];
+        if (cell == null || cell.isDeleted) {
+            return null;
+        }
+        return cell.value;
+    }
+
+    @Override
+    public void addSnake(Snake snake) {
+        Iterator<Position> it = snake.iterator();
+        if (!it.hasNext()) {
+            return;
+        }
+
+        // Head
+        Position head = it.next();
+        ensureCellExists(head);
+        Cell<T> headCell = table[head.row][head.col];
+        headCell.isSnake = true;
+        headCell.isSnakeHead = true;
+        headCell.snakeRef = snake;
+
+        Position prev = head;
+
+        // Body
+        while (it.hasNext()) {
+            Position next = it.next();
+            ensureCellExists(next);
+
+            Cell<T> nextCell = table[next.row][next.col];
+            nextCell.isSnake = true;
+
+            // Link prev → next along snake
+            table[prev.row][prev.col].nextInSnake = next;
+            prev = next;
+        }
+    }
+
+    @Override
+    public void removeSnake(Snake snake) {
+        Iterator<Position> it = snake.iterator();
+        while (it.hasNext()) {
+            Position p = it.next();
+            Cell<T> cell = table[p.row][p.col];
+            if (cell != null) {
+                cell.isSnake = false;
+                cell.isSnakeHead = false;
+                cell.snakeRef = null;
+                cell.nextInSnake = null;
+            }
+        }
+    }
+
+    @Override
+    public int[] getDimensions() {
+        return new int[] { table.length, table[0].length };
+    }
+
+    // ensures that a cell exists at a given snake position
+    private void ensureCellExists(Position p) {
+        if (table[p.row][p.col] == null) {
+            table[p.row][p.col] = new Cell<>(null); 
+        }
+    }
+
+    /**
+     * Computes the hash position of the given key.
+     */
+    private Position hash(T key) {
+        int h = Math.abs(key.hashCode());
+        int rows = table.length;
+        int cols = table[0].length;
+        int row = h % rows;
+        int col = (h / rows) % cols;
+        return new Position(row, col);
+    }
+
+    /**
+     * Internal cell wrapper.
+     */
+    private static class Cell<T> {
+        T value;
+        boolean isDeleted; //tombstone flag
+
+        // distinguish between hash-based vs manual insert
+        boolean isManualKey = false;
+
+        // snake metadata
+        boolean isSnake = false;
+        boolean isSnakeHead = false;
+        Snake snakeRef = null;
+        Position nextInSnake = null;
+
+        Cell(T value) {
+            this.value = value;
+            this.isDeleted = false;
+        }
+    }
+}
